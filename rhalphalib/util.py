@@ -4,17 +4,19 @@ import numpy as np
 def _to_numpy(hinput, read_sumw2=False):
     if isinstance(hinput, tuple) and len(hinput) >= 3:
         if not isinstance(hinput[0], np.ndarray):
-            raise ValueError("Expected numpy array for element 0 of tuple %r" % hinput)
+            raise ValueError("Expected numpy array for element 0 of tuple {}".format(hinput))
         if not isinstance(hinput[1], np.ndarray):
-            raise ValueError("Expected numpy array for element 1 of tuple %r" % hinput)
+            raise ValueError("Expected numpy array for element 1 of tuple {}".format(hinput))
         if not isinstance(hinput[2], str):
-            raise ValueError("Expected string for element 2 of tuple %r" % hinput)
+            raise ValueError("Expected string for element 2 of tuple {}".format(hinput))
+        if read_sumw2 and len(hinput) < 4:
+            raise ValueError("Expected 4 elements of tuple {}, as read_sumw2=True".format(hinput))
         if read_sumw2 and not isinstance(hinput[3], np.ndarray):
-            raise ValueError("Expected numpy array for eleement 3 of tuple %r, as read_sumw2=True" % hinput)
+            raise ValueError("Expected numpy array for element 3 of tuple {}, as read_sumw2=True".format(hinput))
         if hinput[0].size != hinput[1].size - 1:
-            raise ValueError("Counts array and binning array are incompatible in tuple %r" % (hinput,))
+            raise ValueError("Counts array and binning array are incompatible in tuple {}".format(hinput))
         if read_sumw2 and hinput[3].size != hinput[1].size - 1:
-            raise ValueError("Sumw2 array and binning array are incompatible in tuple %r" % (hinput,))
+            raise ValueError("Sumw2 array and binning array are incompatible in tuple {}".format(hinput))
         return hinput
     elif "<class 'ROOT.TH1" in str(type(hinput)):
         sumw = np.zeros(hinput.GetNbinsX())
@@ -43,7 +45,6 @@ def _to_numpy(hinput, read_sumw2=False):
 def _to_TH1(sumw, binning, name):
     import ROOT
     h = ROOT.TH1D(name, "template;%s;Counts" % name, binning.size - 1, binning)
-    h.SetDirectory(0)
     if isinstance(sumw, tuple):
         for i, (w, w2) in enumerate(zip(sumw[0], sumw[1])):
             h.SetBinContent(i + 1, w)
@@ -78,6 +79,9 @@ def install_roofit_helpers():
     _ROOT.gEnv.SetValue("RooFit.Banner=0")
     # TODO: configurable verbosity
     _ROOT.RooMsgService.instance().setGlobalKillBelow(_ROOT.RooFit.WARNING)
+    root_version = _ROOT.gROOT.GetVersionInt()
+
+    _ROOT.TH1.AddDirectory(False)
 
     def _embed_ref(obj, dependents):
         # python reference counting gc will drop rvalue dependents
@@ -106,20 +110,21 @@ def install_roofit_helpers():
 
     _ROOT.RooWorkspace.add = _RooWorkspace_add
 
-    def _RooAbsCollection__iter__(self):
-        it = self.iterator()
-        obj = it.Next()
-        while obj != None:  # noqa: E711
-            yield obj
-            obj = it.Next()
-
-    if hasattr(_ROOT.RooAbsCollection, '__iter__'):
+    if root_version < 62200:
         # https://sft.its.cern.ch/jira/browse/ROOT-10457
-        del _ROOT.RooAbsCollection.__iter__
-        del _ROOT.RooArgList.__iter__
-        del _ROOT.RooArgSet.__iter__
+        def _RooAbsCollection__iter__(self):
+            it = self.iterator()
+            obj = it.Next()
+            while obj != None:  # noqa: E711
+                yield obj
+                obj = it.Next()
 
-    _ROOT.RooAbsCollection.__iter__ = _RooAbsCollection__iter__
+        if hasattr(_ROOT.RooAbsCollection, "__iter__"):
+            del _ROOT.RooAbsCollection.__iter__
+            del _ROOT.RooArgList.__iter__
+            del _ROOT.RooArgSet.__iter__
+
+        _ROOT.RooAbsCollection.__iter__ = _RooAbsCollection__iter__
 
     # This is mainly for collections of parameters
     def _RooAbsCollection_assign(self, other):
