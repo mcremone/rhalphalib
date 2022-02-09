@@ -235,16 +235,18 @@ class TemplateSample(Sample):
                 return 1. / self._paramEffectsUp[param]
             return self._paramEffectsDown[param]
 
-    def autoMCStats(self, lnN=False, shape=False, epsilon=0):
+    def autoMCStats(self, lnN=False, shape=False, name=None, epsilon=0):
         '''
         Set MC statical uncertainties based on self._sumw2
         lnN: aggregate differences
         epsilon: 0 -> epsilon, is only one bin is filled lower syst of 0, gives empty norm
         '''
-
         if self._sumw2 is None:
             raise ValueError("No self._sumw2 defined in template")
             return
+
+        if name is None:
+            name = self.name
 
         if lnN:
             _nom_rate = np.sum(self._nominal)
@@ -255,9 +257,9 @@ class TemplateSample(Sample):
                 _up_rate = np.sum(np.nan_to_num(self._nominal + np.sqrt(self._sumw2), 0.0))
                 _diff = np.abs(_up_rate-_nom_rate) + np.abs(_down_rate-_nom_rate)
                 effect = 1.0 + _diff / (2. * _nom_rate)
-            param = NuisanceParameter(self.name + '_mcstat', 'lnN')
+            param = NuisanceParameter(name + '_mcstat', 'lnN')
             self.setParamEffect(param, effect)
-        if shape:
+        elif shape:
             effect_up = np.ones_like(self._nominal)
             effect_down = np.ones_like(self._nominal)
             for i in range(self.observable.nbins):
@@ -265,7 +267,7 @@ class TemplateSample(Sample):
                     continue
                 effect_up[i] = (self._nominal[i] + np.sqrt(self._sumw2[i]))/self._nominal[i]
                 effect_down[i] = max((self._nominal[i] - np.sqrt(self._sumw2[i]))/self._nominal[i], epsilon)
-            param = NuisanceParameter(self.name + '_mcstat', 'shape')
+            param = NuisanceParameter(name + '_mcstat', 'shape')
             self.setParamEffect(param, effect_up, effect_down)
         else:
             for i in range(self.observable.nbins):
@@ -275,7 +277,7 @@ class TemplateSample(Sample):
                 effect_down = np.ones_like(self._nominal)
                 effect_up[i] = (self._nominal[i] + np.sqrt(self._sumw2[i]))/self._nominal[i]
                 effect_down[i] = max((self._nominal[i] - np.sqrt(self._sumw2[i]))/self._nominal[i], epsilon)
-                param = NuisanceParameter(self.name + '_mcstat_bin%i' % i, combinePrior='shape')
+                param = NuisanceParameter(name + '_mcstat_bin%i' % i, combinePrior='shape')
                 self.setParamEffect(param, effect_up, effect_down)
 
     def getExpectation(self, nominal=False):
