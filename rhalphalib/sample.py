@@ -24,6 +24,7 @@ class Sample(object):
         self._sampletype = sampletype
         self._observable = None
         self._mask = None
+        self._mask_val = 0.
 
     def __repr__(self):
         return "<%s (%s) instance at 0x%x>" % (
@@ -179,16 +180,21 @@ class TemplateSample(Sample):
             effect_up, binning, _ = _to_numpy(effect_up)
             if not np.array_equal(binning, self.observable.binning):
                 raise ValueError("effect_up has incompatible binning with sample %r" % self)
-            zerobins = self._nominal <= 0.
+            zerobins = (self._nominal <= 0.) | (effect_up <= 0.)
             effect_up[zerobins] = 1.
             effect_up[~zerobins] /= self._nominal[~zerobins]
-        if np.sum(effect_up * self._nominal) == 0:
+        if np.sum(effect_up * self._nominal) <= 0:
             # TODO: warning? this can happen regularly
             # we might even want some sort of threshold
             return
-        elif np.all(effect_up == 1.):
+        elif effect_down is None and np.all(effect_up == 1.):
             # some sort of threshold might be useful here as well
             return
+        _weighted_effect_magnitude = np.sum(abs(effect_up - 1) * self._nominal) / np.sum(self._nominal)
+        if 'shape' in param.combinePrior and _weighted_effect_magnitude > 0.5:
+            print("effect_up ({}, {}) has magnitude greater than 50% ({:.2f}%), "
+                  "you might be passing absolute values instead of relative"
+                  .format(param.name, self._name, _weighted_effect_magnitude * 100))
         self._paramEffectsUp[param] = effect_up
 
         if effect_down is not None:
@@ -202,16 +208,21 @@ class TemplateSample(Sample):
                 effect_down, binning, _ = _to_numpy(effect_down)
                 if not np.array_equal(binning, self.observable.binning):
                     raise ValueError("effect_down has incompatible binning with sample %r" % self)
-                zerobins = self._nominal <= 0.
+                zerobins = (self._nominal <= 0.) | (effect_down <= 0.)
                 effect_down[zerobins] = 1.
                 effect_down[~zerobins] /= self._nominal[~zerobins]
-                if np.sum(effect_down * self._nominal) == 0:
+                if np.sum(effect_down * self._nominal) <= 0:
                     # TODO: warning? this can happen regularly
                     # we might even want some sort of threshold
                     return
-                elif np.all(effect_down == 1.):
+                elif np.all(effect_up == 1.) and np.all(effect_down == 1.):
                     # some sort of threshold might be useful here as well
                     return
+            _weighted_effect_magnitude = np.sum(abs(effect_down - 1) * self._nominal) / np.sum(self._nominal)
+            if 'shape' in param.combinePrior and _weighted_effect_magnitude > 0.5:
+                print("effect_down ({}, {}) has magnitude greater than 50% ({:.2f}%), "
+                      "you might be passing absolute values instead of relative"
+                      .format(param.name, self._name, _weighted_effect_magnitude * 100))
             self._paramEffectsDown[param] = effect_down
         else:
             self._paramEffectsDown[param] = None
@@ -232,10 +243,15 @@ class TemplateSample(Sample):
         else:
             if param not in self._paramEffectsDown or self._paramEffectsDown[param] is None:
                 # TODO the symmeterized value depends on if param prior is 'shapeN' or 'shape'
-                return 1. / self._paramEffectsUp[param]
+                if param.combinePrior == 'lnN':
+                    return 1. / self._paramEffectsUp[param]
+                elif param.combinePrior == 'shape':
+                    return self._nominal - abs(self._nominal - self._paramEffectsUp[param])
+                else:
+                    raise NotImplementedError
             return self._paramEffectsDown[param]
 
-    def autoMCStats(self, lnN=False, shape=False, epsilon=0):
+    def autoMCStats(self, lnN=False, shape=False, name=None, epsilon=0):
         '''
         Set MC statical uncertainties based on self._sumw2
         lnN: aggregate differences
@@ -246,6 +262,9 @@ class TemplateSample(Sample):
             raise ValueError("No self._sumw2 defined in template")
             return
 
+        if name is None:
+            name = self.name
+
         if lnN:
             _nom_rate = np.sum(self._nominal)
             if _nom_rate < .0001:
@@ -255,9 +274,9 @@ class TemplateSample(Sample):
                 _up_rate = np.sum(np.nan_to_num(self._nominal + np.sqrt(self._sumw2), 0.0))
                 _diff = np.abs(_up_rate-_nom_rate) + np.abs(_down_rate-_nom_rate)
                 effect = 1.0 + _diff / (2. * _nom_rate)
-            param = NuisanceParameter(self.name + '_mcstat', 'lnN')
+            param = NuisanceParameter(name + '_mcstat', 'lnN')
             self.setParamEffect(param, effect)
-        if shape:
+        elif shape:
             effect_up = np.ones_like(self._nominal)
             effect_down = np.ones_like(self._nominal)
             for i in range(self.observable.nbins):
@@ -265,27 +284,40 @@ class TemplateSample(Sample):
                     continue
                 effect_up[i] = (self._nominal[i] + np.sqrt(self._sumw2[i]))/self._nominal[i]
                 effect_down[i] = max((self._nominal[i] - np.sqrt(self._sumw2[i]))/self._nominal[i], epsilon)
-            param = NuisanceParameter(self.name + '_mcstat', 'shape')
+            param = NuisanceParameter(name + '_mcstat', combinePrior='shape')
             self.setParamEffect(param, effect_up, effect_down)
         else:
             for i in range(self.observable.nbins):
-                if self._nominal[i] <= 0. or self._sumw2[i] <= 0.:
+                if self._nominal[i] <= 0.:
+                    continue
+                if self._sumw2[i] <= 0.:
+                    continue
+                if np.sqrt(self._sumw2[i]) <= 5e-3:
+                    continue
+                ### This is a test, we will not create nuisances for those bins that have high statistics 
+                ### The effect of sqrt(sumw[i]) (that is the uncertainty) on the nominal (that is the number of events). 
+                ### If the effect is smaller than a certain threshold (we start from 1%), we don't create the nuisance
+                if np.sqrt(self._sumw2[i])/self._nominal[i] <= 5e-3:
                     continue
                 effect_up = np.ones_like(self._nominal)
                 effect_down = np.ones_like(self._nominal)
                 effect_up[i] = (self._nominal[i] + np.sqrt(self._sumw2[i]))/self._nominal[i]
                 effect_down[i] = max((self._nominal[i] - np.sqrt(self._sumw2[i]))/self._nominal[i], epsilon)
-                param = NuisanceParameter(self.name + '_mcstat_bin%i' % i, combinePrior='shape')
+                param = NuisanceParameter(name + '_mcstat_bin%i' % i, combinePrior='shape')
                 self.setParamEffect(param, effect_up, effect_down)
+                #print("Print autoMCStats")
+                #print("Name, bin, nominal, sumw2, sqrt(sumw2), effect up, effect down")
+                #print(self.name, i, self._nominal[i], self._sumw2[i], np.sqrt(self._sumw2[i]), effect_up[i], effect_down[i], "\n")
 
     def getExpectation(self, nominal=False):
         '''
         Create an array of per-bin expectations, accounting for all nuisance parameter effects
             nominal: if True, calculate the nominal expectation (i.e. just plain numbers)
         '''
+
         nominalval = self._nominal.copy()
         if self.mask is not None:
-            nominalval[~self.mask] = 0.
+            nominalval[~self.mask] = self._mask_val
         if nominal:
             return nominalval
         else:
@@ -382,7 +414,7 @@ class TemplateSample(Sample):
         if self._paramEffectsUp.get(param, None) is None:
             return '-'
         elif 'shape' in param.combinePrior:
-            return '%.3f' % self._paramEffectScales.get(param, 1)
+            return '%.4f' % self._paramEffectScales.get(param, 1)
         elif isinstance(self.getParamEffect(param, up=True), DependentParameter):
             # about here's where I start to feel painted into a corner
             dep = self.getParamEffect(param, up=True)
@@ -413,9 +445,9 @@ class TemplateSample(Sample):
                 # Here we can safely defer to combine to calculate symmeterized effect
                 down = None
             if down is None:
-                return '%.3f' % up
+                return '%.4f' % up
             else:
-                return '%.3f/%.3f' % (up, down)
+                return '%.4f/%.4f' % (down, up)
 
 
 class ParametericSample(Sample):
@@ -502,9 +534,10 @@ class ParametericSample(Sample):
         Create an array of per-bin expectations, accounting for all nuisance parameter effects
             nominal: if True, calculate the nominal expectation (i.e. just plain numbers)
         '''
+
         out = self._nominal.copy()  # this is a shallow copy
         if self.mask is not None:
-            out[~self.mask] = [IndependentParameter("masked", 0, constant=True) for _ in range((~self.mask).sum())]
+            out[~self.mask] = [IndependentParameter("masked", self._mask_val, constant=True) for _ in range((~self.mask).sum())]
         if nominal:
             return np.array([p.value for p in out])
         else:
