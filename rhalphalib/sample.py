@@ -100,7 +100,7 @@ class TemplateSample(Sample):
         '''
         name: self-explanatory
         sampletype: Sample.SIGNAL or BACKGROUND or DATA
-        template: Either a ROOT TH1, a 1D Coffea Hist object, or a numpy histogram
+        template: Either a ROOT TH1, a 1D Coffea Hist object, a 1D hist Hist object, or a numpy histogram
             in the latter case, please extend the numpy histogram tuple to define an observable name
             i.e. (sumw, binning, name)
             (for the others, the observable name is taken from the x axis name)
@@ -251,18 +251,44 @@ class TemplateSample(Sample):
                     raise NotImplementedError
             return self._paramEffectsDown[param]
 
+<<<<<<< HEAD
     def autoMCStats(self, lnN=False, epsilon=0):
         '''
         Set MC statical uncertainties based on self._sumw2
         lnN: aggregate differences
         epsilon: 0 -> epsilon, is only one bin is filled lower syst of 0, gives empty norm
+=======
+    def autoMCStats(self, lnN=False, epsilon=0, threshold=0, sample_name=None, bini=None):
+        '''
+        Set MC statical uncertainties based on self._sumw2. `sample_name` and `bini` parameters
+        don't need to modified for typical use cases.
+
+        lnN: aggregate differences
+        epsilon: 0 -> epsilon, is only one bin is filled lower syst of 0, gives empty norm
+        threshold: if relative uncertainty is < threshold, won't be added (only for lnN = False)
+        sample_name: custom name for e.g. using same parameters in two regions. Uses ``self.name``
+            by default (if sample_name=None).
+        bini: create parameter for a specific bin. By default creates for all (if bin=None)
+            (only if lnN = False).
+>>>>>>> 79aa39ada2560c5c705200489ae8e8b9faf64d46
         '''
 
         if self._sumw2 is None:
             raise ValueError("No self._sumw2 defined in template")
             return
 
+<<<<<<< HEAD
         if lnN:
+=======
+        name = self._name if sample_name is None else sample_name
+
+        if lnN:
+            if threshold > 0:
+                raise ValueError("No threshold implemented for lnN stat uncertainty")
+            if bini is not None:
+                raise ValueError("Bin-specific uncertainty not implemented for lnN stat uncertainty")
+
+>>>>>>> 79aa39ada2560c5c705200489ae8e8b9faf64d46
             _nom_rate = np.sum(self._nominal)
             if _nom_rate < .0001:
                 effect = 1.0
@@ -271,17 +297,39 @@ class TemplateSample(Sample):
                 _up_rate = np.sum(np.nan_to_num(self._nominal + np.sqrt(self._sumw2), 0.0))
                 _diff = np.abs(_up_rate-_nom_rate) + np.abs(_down_rate-_nom_rate)
                 effect = 1.0 + _diff / (2. * _nom_rate)
+<<<<<<< HEAD
             param = NuisanceParameter(self.name + '_mcstat', 'lnN')
             self.setParamEffect(param, effect)
         else:
             for i in range(self.observable.nbins):
+=======
+            param = NuisanceParameter(name + '_mcstat', 'lnN')
+            self.setParamEffect(param, effect)
+        else:
+            if bini is not None:
+                assert bini >= 0 and bini < self.observable.nbins, "autoMCStats bini %d out of range for sample %r " % (bini, self)
+
+            for i in range(self.observable.nbins):
+                if bini is not None and bini != i:
+                    continue
+>>>>>>> 79aa39ada2560c5c705200489ae8e8b9faf64d46
                 if self._nominal[i] <= 0. or self._sumw2[i] <= 0.:
                     continue
                 effect_up = np.ones_like(self._nominal)
                 effect_down = np.ones_like(self._nominal)
+<<<<<<< HEAD
                 effect_up[i] = (self._nominal[i] + np.sqrt(self._sumw2[i]))/self._nominal[i]
                 effect_down[i] = max((self._nominal[i] - np.sqrt(self._sumw2[i]))/self._nominal[i], epsilon)
                 param = NuisanceParameter(self.name + '_mcstat_bin%i' % i, combinePrior='shape')
+=======
+
+                if (np.sqrt(self._sumw2[i]) / (self._nominal[i] + 1e-12)) < threshold:
+                    continue
+
+                effect_up[i] = (self._nominal[i] + np.sqrt(self._sumw2[i]))/self._nominal[i]
+                effect_down[i] = max((self._nominal[i] - np.sqrt(self._sumw2[i]))/self._nominal[i], epsilon)
+                param = NuisanceParameter(name + '_mcstat_bin%i' % i, combinePrior='shape')
+>>>>>>> 79aa39ada2560c5c705200489ae8e8b9faf64d46
                 self.setParamEffect(param, effect_up, effect_down)
 
     def getExpectation(self, nominal=False):
@@ -607,7 +655,7 @@ class ParametericSample(Sample):
 
 
 class TransferFactorSample(ParametericSample):
-    def __init__(self, name, sampletype, transferfactor, dependentsample, observable=None):
+    def __init__(self, name, sampletype, transferfactor, dependentsample, observable=None, min_val=None):
         '''
         Create a sample that depends on another Sample by some transfer factor.
         The transfor factor can be a constant, an array of parameters of same length
@@ -615,6 +663,7 @@ class TransferFactorSample(ParametericSample):
         dimension matches the sample binning, i.e. expectation = tf @ dependent_expectation.
         The latter requires an additional observable argument to specify the definition of the first dimension.
         In all cases, please use numpy object arrays of Parameter types.
+        Passing in a ``min_val`` means param values will be clipped at the min_val.
         '''
         if not isinstance(transferfactor, np.ndarray):
             raise ValueError("Transfer factor is not a numpy array")
@@ -624,9 +673,15 @@ class TransferFactorSample(ParametericSample):
             if observable is None:
                 raise ValueError("Transfer factor is 2D array, please provide an observable")
             params = np.dot(transferfactor, dependentsample.getExpectation())
+            if min_val is not None:
+                for idx, p in np.ndenumerate(params):
+                    params[idx] = p.max(min_val)
         elif len(transferfactor.shape) <= 1:
             observable = dependentsample.observable
             params = transferfactor * dependentsample.getExpectation()
+            if min_val is not None:
+                for i, p in enumerate(params):
+                    params[i] = p.max(min_val)
         else:
             raise ValueError("Transfer factor has invalid dimension")
         super(TransferFactorSample, self).__init__(name, sampletype, observable, params)
